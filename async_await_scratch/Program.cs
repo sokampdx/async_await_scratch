@@ -4,7 +4,7 @@ AsyncLocal<int> myVal = new();
 for (int i = 0; i < 1000; i++)
 {
     myVal.Value = i;
-    ThreadPool.QueueUserWorkItem(delegate
+    MyThreadPool.QueueUserWorkItem(delegate
     {
         Console.WriteLine(myVal.Value);
         Thread.Sleep(1000);
@@ -16,8 +16,8 @@ Console.ReadLine();
 
 static class MyThreadPool
 {
-    private static readonly BlockingCollection<Action> s_workItems = new();
-    public static void QueueUserWorkItem(Action action) => s_workItems.Add(action);
+    private static readonly BlockingCollection<(Action, ExecutionContext?)> s_workItems = new();
+    public static void QueueUserWorkItem(Action action) => s_workItems.Add((action, ExecutionContext.Capture()));
 
     static MyThreadPool()
     {
@@ -26,10 +26,17 @@ static class MyThreadPool
             new Thread(() =>
             {
                 while (true)
+                {
+                    (Action workItem, ExecutionContext? context) = s_workItems.Take();
+                    if (context is null)
                     {
-                        Action workItem = s_workItems.Take();
-                        workItem();
+                        workItem(); 
                     }
+                    else
+                    {
+                        ExecutionContext.Run(context, state => ((Action) state!).Invoke(), workItem);
+                    }
+                }
             })
             { IsBackground = true }.Start();
         }
