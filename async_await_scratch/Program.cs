@@ -1,5 +1,6 @@
 // https://www.youtube.com/watch?v=R-z2Hv-7nxk
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 
 // AsyncLocal<int> myVal = new();
@@ -16,19 +17,56 @@ using System.Runtime.ExceptionServices;
 // }
 // MyTask.WhenAll(tasks).Wait();
 
-Console.Write("Hello, ");
-MyTask.Delay(2000).ContinueWith(delegate
+// Console.Write("Hello, ");
+// MyTask.Delay(2000).ContinueWith(delegate
+// {
+//     Console.Write("World!");
+//     return MyTask.Delay(2000);
+// }).ContinueWith(delegate
+// {
+//     Console.Write(" And CS!");
+//     return MyTask.Delay(2000);
+// }).ContinueWith(delegate
+// {
+//     Console.Write(" How are you?");
+// }).Wait();
+
+// MyTask.Iterate(PrintAsync()).Wait();
+
+// static IEnumerable<MyTask> PrintAsync()
+// {
+//     for (int i = 0;  ; i++)
+//     {
+//         yield return MyTask.Delay(1000); // looking to wait on all task...
+//         Console.WriteLine(i);
+//     }
+
+// }
+
+PrintAsync().Wait();
+static async Task PrintAsync()
 {
-    Console.Write("World!");
-    return MyTask.Delay(2000);
-}).ContinueWith(delegate
-{
-    Console.Write(" And CS!");
-    return MyTask.Delay(2000);
-}).ContinueWith(delegate
-{
-    Console.Write(" How are you?");
-}).Wait();
+    for (int i = 0; ; i++)
+    {
+        await MyTask.Delay(1000);
+        Console.WriteLine(i);
+    }
+}
+
+// analogy to use i as mytask
+// foreach (int i in Count(10))
+// {
+//     Console.WriteLine(i);
+// }
+
+// IEnumerable<int> Count(int count)
+// {
+//     for (int i = 0; i < count; i++)
+//     {
+//         yield return i;
+//     }
+// }
+
 
 Console.WriteLine();
 Console.WriteLine("Done");
@@ -39,6 +77,19 @@ class MyTask
     private Exception? _exception;
     private Action? _continuation;
     private ExecutionContext? _context;
+
+    public struct Awaiter(MyTask t) : INotifyCompletion
+    {
+        public Awaiter GetAwaiter() => this;
+
+        public bool IsCompleted => t.IsCompleted;
+
+        public void OnCompleted(Action continuation) => t.ContinueWith(continuation);
+
+        public void GetResult() => t.Wait();
+    }
+
+    public Awaiter GetAwaiter() => new(this);
 
     public bool IsCompleted 
     { 
@@ -227,6 +278,34 @@ class MyTask
         MyTask t = new();
         new Timer(_ => t.SetResult()).Change(timeout, -1); // not sleep because thread is blocked
 
+        return t;
+    }
+
+    public static MyTask Iterate(IEnumerable<MyTask> tasks)
+    {
+        MyTask t = new();
+
+        IEnumerator<MyTask> e = tasks.GetEnumerator();
+
+        void MoveNext()
+        {
+            try 
+            {
+                if (e.MoveNext())
+                {
+                    MyTask next = e.Current;
+                    next.ContinueWith(MoveNext);
+                    return;
+                }
+            } catch (Exception ex)
+            {
+                t.SetException(ex);
+                return;
+            }
+            t.SetResult();
+        }
+
+        MoveNext();
         return t;
     }
 }
