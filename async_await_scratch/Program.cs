@@ -2,19 +2,36 @@
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
 
-AsyncLocal<int> myVal = new();
-List<MyTask> tasks = new();
-for (int i = 0; i < 50; i++)
-{
-    myVal.Value = i;
-    tasks.Add(MyTask.Run(delegate
-    {
-        Console.WriteLine(myVal.Value);
-        Thread.Sleep(1000);
-    }));
+// AsyncLocal<int> myVal = new();
+// List<MyTask> tasks = new();
+// for (int i = 0; i < 30; i++)
+// {
+//     myVal.Value = i;
+//     tasks.Add(MyTask.Run(delegate
+//     {
+//         Console.WriteLine(myVal.Value);
+//         Thread.Sleep(1000);
+//     }));
     
-}
-foreach (var t in tasks) t.Wait();
+// }
+// MyTask.WhenAll(tasks).Wait();
+
+Console.Write("Hello, ");
+MyTask.Delay(2000).ContinueWith(delegate
+{
+    Console.Write("World!");
+    return MyTask.Delay(2000);
+}).ContinueWith(delegate
+{
+    Console.Write(" And CS!");
+    return MyTask.Delay(2000);
+}).ContinueWith(delegate
+{
+    Console.Write(" How are you?");
+}).Wait();
+
+Console.WriteLine();
+Console.WriteLine("Done");
 
 class MyTask
 {
@@ -81,20 +98,80 @@ class MyTask
         }
     }
 
-    public void ContinueWith(Action action)
+    public MyTask ContinueWith(Func<MyTask> action)
     {
+        MyTask t = new ();
+
+        Action callback = () =>
+        {
+            try
+            {
+                MyTask next = action();
+                next.ContinueWith(delegate
+                {
+                   if (next._exception is not null)
+                    {
+                        t.SetException(next._exception);
+                    } 
+                    else
+                    {
+                        t.SetResult();
+                    }
+                });
+            }
+            catch (Exception e)
+            {
+                t.SetException(e);
+                return;
+            }
+        };
+
         lock (this)
         {
             if (_completed)
             {
-                MyThreadPool.QueueUserWorkItem(action);
+                MyThreadPool.QueueUserWorkItem(callback);
             }
             else
             {
-                _continuation = action;
+                _continuation = callback;
                 _context = ExecutionContext.Capture();
             }
         }
+        return t;
+    }
+
+    public MyTask ContinueWith(Action action)
+    {
+        MyTask t = new ();
+
+        Action callback = () =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception e)
+            {
+                t.SetException(e);
+                return;
+            }
+            t.SetResult();
+        };
+
+        lock (this)
+        {
+            if (_completed)
+            {
+                MyThreadPool.QueueUserWorkItem(callback);
+            }
+            else
+            {
+                _continuation = callback;
+                _context = ExecutionContext.Capture();
+            }
+        }
+        return t;
     }
 
     public static MyTask Run(Action action)
@@ -114,6 +191,42 @@ class MyTask
             }
             t.SetResult();
         });
+        return t;
+    }
+
+    public static MyTask WhenAll(List<MyTask> tasks)
+    {
+        MyTask t = new();
+
+        if (tasks.Count == 0)
+        {
+            t.SetResult();
+        }
+        else
+        {
+            int remaining = tasks.Count;
+            Action continuation = () =>
+            {
+                if (Interlocked.Decrement(ref remaining) == 0) // atomic lock
+                {
+                    // TODO: exceptions;
+                    t.SetResult();
+                }
+            };
+
+            foreach (var task in tasks)
+            {
+                task.ContinueWith(continuation);
+            }
+        }
+        return t;
+    }
+
+    public static MyTask Delay(int timeout)
+    {
+        MyTask t = new();
+        new Timer(_ => t.SetResult()).Change(timeout, -1); // not sleep because thread is blocked
+
         return t;
     }
 }
